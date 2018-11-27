@@ -2,6 +2,7 @@
 #include <boost/asio.hpp>
 #include <future>
 #include <iostream>
+#include <sstream>
 
 #include "MRUDPSocket.hpp"
 
@@ -11,10 +12,11 @@ using mrudp::MRUDPSocket;
 using boost::asio::ip::udp;
 using mrudp::Connection;
 using boost::shared_ptr;
+using std::chrono::steady_clock;
+using std::chrono::milliseconds;
 
-
-void receive(std::vector<char>& data, const udp::endpoint& recv) {
-    std::cout << "Received from " << recv << data.data() << std::endl; 
+void receive(std::string data, const udp::endpoint& recv) {
+    std::cout << "Received msg from " << std::endl; 
 }
 
 int main(int argc, char* argv[]) {
@@ -34,16 +36,25 @@ int main(int argc, char* argv[]) {
         if (!complete) {
             return 1;
         }
-        
-        std::string msg("Hello");
+        con->start_async_recv(std::bind(receive, std::placeholders::_1, con->get_send_ep()));
+        std::string msg("Hello ");
+        int i = 0;
         while(con->is_open()) {
-            std::string data;
-            bool complete = con->recv_data(data, std::chrono::milliseconds(1000));
-            if (complete) {
-                std::cout << data << std::endl;
-                con->send_req(msg + data);
-            }
+        //     std::string data;
+        //     // bool complete = con->recv_data(data, std::chrono::milliseconds(1000));
+        //     if (complete) {
+        // //         // std::cout << i << std::endl;
+
+        //     }
+            std::stringstream ss;
+            ss << ++i;
+            auto t = steady_clock::now();
+            con->send_req(msg + ss.str());
+            auto delta = std::chrono::duration_cast<milliseconds>(t - steady_clock::now());
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000/60) - delta);
         }
+        std::cout << i << std::endl;
+        // std::cout << "Close" << std::endl;
     } catch (std::exception& e) {
         std::cerr << e.what() << std::endl;
     }

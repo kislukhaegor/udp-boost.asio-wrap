@@ -42,7 +42,7 @@ Message::Header::Header(const char* data) {
     read_pos += sizeof(data_size);
 }
 
-std::string Message::Header::str() {
+std::string Message::Header::str() const {
     std::string data;
     data += number_to_string(htonl(id)) +
             number_to_string(htonl(crc_32_sum)) +
@@ -55,7 +55,7 @@ std::string Message::Header::str() {
 }
 
 Message::Message(const char* net_data, size_t size)
-    : data_(net_data + sizeof(Header), size - sizeof(Header)),
+    : data_(net_data + (sizeof(Header) + sizeof(Header::id)), size - (sizeof(Header) + sizeof(Header::id))),
       header_(net_data) {
 }
 

@@ -1,15 +1,13 @@
 #pragma once
 
-#include <vector>
 #include <array>
 #include <list>
+#include <set>
 #include <cstdint>
 #include <chrono>
 #include <functional>
 #include <future>
 #include <mutex>
-#include <boost/asio/deadline_timer.hpp>
-#include <boost/asio/steady_timer.hpp>
 #include <condition_variable>
 #include <boost/asio.hpp>
 #include <boost/multi_index_container.hpp>
@@ -18,10 +16,10 @@
 #include <boost/multi_index/member.hpp>
 #include <boost/shared_ptr.hpp>
 #include <boost/make_shared.hpp>
+#include <boost/enable_shared_from_this.hpp>
 
 #include "Message.hpp"
 
-using boost::asio::steady_timer;
 using boost::asio::ip::udp;
 using boost::shared_ptr;
 using boost::multi_index::tag;
@@ -39,17 +37,16 @@ namespace mrudp {
 
     class MRUDPSocket;
 
-    class Connection {
+    class Connection : public boost::enable_shared_from_this<Connection> {
       public:
         Connection(const udp::endpoint&, const udp::endpoint&, MRUDPSocket*);
         ~Connection();
-        // Connection(udp::endpoint&, shared_ptr<udp::socket>);
-        // Connection(const Connection&) = delete;
-        // Connection& operator=(const Connection&) = delete;
-        // void recv_data(std::string& data);
+        Connection(const Connection&) = delete;
+        Connection& operator=(const Connection&) = delete;
+
         void send_def(const std::string& data);
         void send_req(const std::string& data);
-        // void send_seq(const std::vector& char data);
+        void send_seq(const std::string& data);
 
         bool start_async_recv(const std::function<void(std::string data)>& msg_handler);
         void stop_async_recv();
@@ -99,6 +96,9 @@ namespace mrudp {
         void handle_not_accepted_msg();
         void handle_message(const message_ptr&);
         void handle_serv(const message_ptr&);
+        void handle_seq(const message_ptr&);
+
+        bool accept_msg(uint32_t seq);
 
         bool open_;
 
@@ -119,8 +119,12 @@ namespace mrudp {
 
         std::mutex read_message_m_;
         std::condition_variable read_message_;
-        // std::list<Message> defered_messages_;
         
+        std::recursive_mutex defered_messages_m_;
+        message_set_type defered_messages_;
+        uint32_t last_seq_recv_;
+        uint32_t last_seq_send_;
+
         std::mutex not_accepted_cond_m_;
         std::condition_variable not_accepted_cond_;
 
@@ -141,6 +145,8 @@ namespace mrudp {
 
         std::mutex buf_recv_msgs_m_;
         std::list<message_ptr> buf_recv_msgs_;
+
+        std::set<uint32_t> accepted_nums;
 
         friend class MRUDPSocket;
     };
@@ -189,6 +195,18 @@ namespace mrudp {
 
         bool send_to_impl(const shared_ptr<Message>& msg, const udp::endpoint& ep, size_t& bytes_transferred);
      
+        bool listen_and_accept(const std::chrono::milliseconds& timeout);
+
+        size_t async_listen_and_accept(size_t count, const std::chrono::milliseconds&);
+
+        void set_disconnect_handler(std::function<void(shared_ptr<Connection>)>);
+
+        void set_accept_handler(std::function<void(shared_ptr<Connection>)>);
+
+        const std::function<void(shared_ptr<Connection>)>& get_disconnect_handler() const;
+       
+        const std::function<void(shared_ptr<Connection>)>& get_accept_handler() const;
+      
       private:
 
         void start_receive();
@@ -231,8 +249,6 @@ namespace mrudp {
         udp::socket send_socket_;
         udp::socket recv_socket_;
 
-        steady_timer recv_deadline_;
-
         udp::endpoint tmp_ep_;
         std::array<char, 2048> tmp_data_;
 
@@ -241,5 +257,8 @@ namespace mrudp {
 
         std::mutex not_accepted_connections_m_;
         connections_set_type not_accepted_connections_;
+
+        std::function<void(shared_ptr<Connection>)> disconnect_handler;
+        std::function<void(shared_ptr<Connection>)> accept_handler;
     };
 };

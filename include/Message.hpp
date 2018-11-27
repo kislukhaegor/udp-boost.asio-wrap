@@ -28,7 +28,7 @@ namespace mrudp {
             Header(const char*);
             Header(uint32_t seq_number = 0, PacketType type = PacketType::DEF);
 
-            std::string str();
+            std::string str() const;
 
             static const uint32_t id = UUID;
             uint32_t crc_32_sum;
