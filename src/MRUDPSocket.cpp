@@ -453,7 +453,7 @@ void MRUDPSocket::handle_receive(size_t bytes_recvd) {
             connect_cond_.notify_all();
             return;
         }
-    } catch (std::exception& e) {
+    } catch (std::invalid_argument& e) {
         return;
     }
 }

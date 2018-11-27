@@ -3,6 +3,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <boost/crc.hpp>
+#include <stdexcept>
 
 #include "Message.hpp"
 
@@ -27,6 +28,10 @@ Message::Header::Header(uint32_t seq_number, Message::PacketType type)
 }
 
 Message::Header::Header(const char* data) {
+    uint32_t parse_id = ntohl(GET_FROM_STRING(decltype(id), data, 0));
+    if (parse_id != id) {
+        throw std::invalid_argument("Invalid id");
+    }
     size_t read_pos = sizeof(id);
     crc_32_sum = ntohl(GET_FROM_STRING(decltype(crc_32_sum), data, read_pos));
     read_pos += sizeof(crc_32_sum);
@@ -168,9 +173,3 @@ uint32_t mrudp::calculate_crc32(const char* data, size_t size) {
     result.process_bytes(data, size);
     return result.checksum();
 }
-// int main() {
-//     Message msg;
-//     msg.append_data("Hello");
-//     Message msg2(msg.str());
-//     std::cout << msg2.get_data() << std::endl;;
-// }
