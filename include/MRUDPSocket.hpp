@@ -244,7 +244,7 @@ namespace mrudp {
         std::condition_variable connect_cond_;
         /*----------------------------------*/
 
-        boost::asio::io_service io_service_;
+        boost::asio::io_context io_context_;
 
         udp::socket send_socket_;
         udp::socket recv_socket_;

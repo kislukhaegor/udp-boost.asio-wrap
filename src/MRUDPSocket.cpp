@@ -8,7 +8,7 @@ using mrudp::MRUDPSocket;
 using mrudp::Message;
 using mrudp::Connection;
 using boost::asio::ip::udp;
-using boost::asio::io_service;
+using boost::asio::io_context;
 
 static const std::chrono::milliseconds recv_timeout(3000);
 static const std::chrono::milliseconds conn_timeout(12000);
@@ -362,8 +362,8 @@ MRUDPSocket::MRUDPSocket(unsigned send_port, unsigned recv_port)
     : open_(false),
       listen_notify_(false),
       connecting_notify_(false),
-      send_socket_(io_service_, udp::endpoint(udp::v4(), send_port)),
-      recv_socket_(io_service_, udp::endpoint(udp::v4(), recv_port)) {
+      send_socket_(io_context_, udp::endpoint(udp::v4(), send_port)),
+      recv_socket_(io_context_, udp::endpoint(udp::v4(), recv_port)) {
 }
 
 MRUDPSocket::~MRUDPSocket() {
@@ -380,8 +380,8 @@ void MRUDPSocket::open() {
     }
     open_ = true;
     start_receive();
-    std::size_t (boost::asio::io_service::*run)() = &boost::asio::io_service::run;
-    io_future_ = std::async(std::launch::async, std::bind(run, &io_service_));
+    std::size_t (boost::asio::io_context::*run)() = &boost::asio::io_context::run;
+    io_future_ = std::async(std::launch::async, std::bind(run, &io_context_));
 }
 
 void MRUDPSocket::close() {
@@ -389,7 +389,7 @@ void MRUDPSocket::close() {
         return;
     }
     open_ = false;
-    io_service_.stop();
+    io_context_.stop();
     io_future_.wait();
     for (auto con : connections_) {
         con->close();
