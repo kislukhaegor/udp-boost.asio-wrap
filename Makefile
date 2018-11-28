@@ -1,6 +1,6 @@
 CXX = g++
 HEADERS_PATH = include
-PARAMS = -std=c++17 -lboost_system -lpthread -I $(HEADERS_PATH)
+PARAMS = -std=c++17 -lboost_system -lboost_fiber -lboost_context -lpthread -I $(HEADERS_PATH) 
 SRCS_PATH = src
 SRCS = \
 	$(SRCS_PATH)/Message.cpp \
@@ -11,4 +11,4 @@ server : $(SRCS) $(SRCS_PATH)/server.cpp
 
 client: $(SRCS) $(SRCS_PATH)/client.cpp
 	$(CXX) $(SRCS) $(SRCS_PATH)/client.cpp $(PARAMS) -o client.out
- 
+

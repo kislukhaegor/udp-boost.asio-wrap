@@ -65,7 +65,7 @@ int main() {
         std::set<shared_ptr<Connection>> cons;
         socket->set_accept_handler(std::bind(accept_handler, std::ref(cons), std::placeholders::_1));
         socket->set_disconnect_handler(std::bind(disconnect_handler, std::ref(cons), std::placeholders::_1));
-        socket->async_listen_and_accept(5, milliseconds(60000));
+        socket->async_listen_and_accept(5, milliseconds(10000));
         answer(cons);
         socket->close();
     } catch (std::exception& e) {

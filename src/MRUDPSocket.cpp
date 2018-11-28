@@ -137,27 +137,6 @@ bool Connection::is_async_recv() const {
     return is_async_recv_;
 }
 
-bool Connection::recv_data(std::string& data, const std::chrono::milliseconds& timeout) {
-    if (unreaded_messages_.empty()) {
-        std::unique_lock<std::mutex> lock(read_message_m_);
-        if (!read_message_.wait_for(lock, timeout,
-            [this]() {
-                return !unreaded_messages_.empty() && !open_;
-            }
-        )) {
-            return false;
-        }
-    }
-    if (!open_) {
-        return false;
-    }
-    std::unique_lock<std::recursive_mutex> lock(unreaded_messages_m_);
-    auto msg = unreaded_messages_.front();
-    unreaded_messages_.pop_front();
-    data = std::move(msg->get_data());
-    return true;
-}
-
 void Connection::send_def(const std::string& data) {
     message_ptr msg = boost::make_shared<Message>(data);
     msg->set_packet_type(Message::PacketType::DEF);
@@ -381,6 +360,7 @@ void MRUDPSocket::open() {
     open_ = true;
     start_receive();
     std::size_t (boost::asio::io_context::*run)() = &boost::asio::io_context::run;
+ 
     io_future_ = std::async(std::launch::async, std::bind(run, &io_context_));
 }
 
@@ -458,105 +438,6 @@ void MRUDPSocket::handle_receive(size_t bytes_recvd) {
     }
 }
 
-bool MRUDPSocket::listen(shared_ptr<Connection>& con,
-                         const std::chrono::milliseconds& timeout) {
-    std::unique_lock<std::mutex> lock(listen_mutex_);
-    if (!listen_cond_.wait_for(lock, timeout,
-        [this] {
-            return listen_notify_ == true;
-        })
-    ) {
-        return false;
-    }
-    listen_notify_ = false;
-    lock.unlock();
-
-    std::unique_lock<std::mutex> lock_msg(listen_message_mutex_);
-    udp::endpoint send_ep = listen_endpoint_;
-    shared_ptr<Message> msg = listen_message_;
-    listen_message_.reset();
-    lock_msg.unlock();
-
-    udp::endpoint recv_ep = send_ep;
-    recv_ep.port(msg->get_params());
-    con = boost::make_shared<Connection>(send_ep, recv_ep, this);
-
-    std::unique_lock<std::mutex> lock_con(not_accepted_connections_m_);
-    not_accepted_connections_.insert(con);
-    lock_con.unlock();
-
-    return true;
-}
-
-bool MRUDPSocket::accept(shared_ptr<Connection>& con,
-                         const std::chrono::milliseconds& timeout) {
-    shared_ptr<Message> send_msg = boost::make_shared<Message>();
-    send_msg->set_flags(Message::Flag::INIT | Message::Flag::ACK);
-    send_msg->set_params(recv_socket_.local_endpoint().port());
-    size_t length = 0;
-    bool complete = send_to_impl(send_msg, con->get_recv_ep(), length);
-    if (!complete) {
-        return false;
-    }
-    std::unique_lock<std::mutex> lock(accept_mutex_);
-    if (!accept_cond_.wait_for(lock, timeout,
-        [this, con] {
-            if (!accept_con_) {
-                return false;
-            }
-            return accept_con_->get_send_ep() == con->get_send_ep();
-        })
-    ) {
-        return false;
-    }
-    std::unique_lock<std::mutex> lock_con(connections_m_);
-    connections_.insert(con);
-    con->start();
-    if (accept_handler) {
-        accept_handler(con);
-    }
-    return true;
-}
-
-bool MRUDPSocket::connect(const udp::endpoint& ep,
-                          shared_ptr<Connection>& con,
-                          const std::chrono::milliseconds& timeout) {
-    shared_ptr<Message> send_msg = boost::make_shared<Message>();
-    send_msg->set_flags(Message::Flag::INIT);
-    send_msg->set_params(recv_socket_.local_endpoint().port());
-    size_t length = 0;
-    bool complete = send_to_impl(send_msg, ep, length);
-    if (!complete) {
-        return false;
-    }
-    std::unique_lock<std::mutex> lock(connect_mutex_);
-    if (!connect_cond_.wait_for(lock, timeout,
-        [this] {
-            return connecting_notify_ == true;
-        })
-    ) {
-        return false;
-    }
-    lock.unlock();
-    std::unique_lock<std::mutex> lock_con(connect_message_mutex_);
-    udp::endpoint send_ep = connect_sender_ep_;
-    lock_con.unlock();
-
-    send_msg->set_flags(Message::Flag::ACK);
-    send_msg->set_params(0);
-    length = 0;
-    complete = send_to_impl(send_msg, ep, length);
-    if (!complete) {
-        return false;
-    }
-
-    con = boost::make_shared<Connection>(send_ep, ep, this);
-    connections_.insert(con);
-
-    con->start();
-    return true;
-}
-
 const MRUDPSocket::connections_set_type& MRUDPSocket::get_connections() const {
     return connections_;
 }
@@ -575,35 +456,6 @@ bool MRUDPSocket::send_to_impl(const shared_ptr<Message>& msg,
         return false;
     }
     return true;
-}
-
-bool MRUDPSocket::listen_and_accept(const std::chrono::milliseconds& timeout) {
-    auto t = std::chrono::steady_clock::now();
-    shared_ptr<Connection> con;
-    bool complete = listen(con, timeout);
-    if (!complete) {
-        return false;
-    }
-    complete = accept(con, timeout);
-    return complete;
-}
-
-size_t MRUDPSocket::async_listen_and_accept(size_t count, const std::chrono::milliseconds& timeout) {
-    std::vector<std::future<bool>> futures;
-    for (size_t i = 0; i < count; ++i) {
-        futures.push_back(std::async(std::launch::async, &MRUDPSocket::listen_and_accept, this, std::cref(timeout)));
-    }
-    for (auto& fut : futures) {
-        fut.wait();
-    }
-    size_t success_count = 0;
-    for (size_t i = 0; i < count; ++i) {
-        bool complete = futures[i].get();
-        if (complete) {
-            ++success_count;
-        }
-    }
-    return success_count;
 }
 
 void MRUDPSocket::set_disconnect_handler(std::function<void(shared_ptr<Connection>)> handler) {
