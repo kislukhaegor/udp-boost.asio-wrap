@@ -273,7 +273,6 @@ namespace mrudp {
 
     template<class Rep, class Period>
     bool MRUDPSocket::listen_and_accept(const std::chrono::duration<Rep, Period>& timeout) {
-        auto t = std::chrono::steady_clock::now();
         shared_ptr<Connection> con;
         bool complete = listen(con, timeout);
         if (!complete) {

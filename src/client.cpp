@@ -16,7 +16,7 @@ using std::chrono::steady_clock;
 using std::chrono::milliseconds;
 
 void receive(std::string data, const udp::endpoint& recv) {
-    std::cout << "Received msg from " << std::endl; 
+    std::cout << "Received msg from " << recv << " : " << data << std::endl; 
 }
 
 int main(int argc, char* argv[]) {
