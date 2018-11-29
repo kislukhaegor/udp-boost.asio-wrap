@@ -85,7 +85,7 @@ void Connection::wait_recv() {
             std::unique_lock<std::mutex> lock(buf_recv_msgs_m_);
             buf_recv_msgs_.pop_front();
             lock.unlock();
-            /* Насколько я понимаю, это передав управление другому потоку, я позволю ему захватить mutex и дописать в очередь */
+            /* Насколько я понимаю это, передав управление другому потоку, я позволю ему захватить mutex и дописать в очередь */
             std::this_thread::yield();
         }
     }
@@ -472,4 +472,19 @@ const std::function<void(shared_ptr<Connection>)>& MRUDPSocket::get_disconnect_h
 
 const std::function<void(shared_ptr<Connection>)>& MRUDPSocket::get_accept_handler() const {
     return accept_handler;
+}
+
+boost::asio::ip::address MRUDPSocket::get_local_ip() {
+    try {
+        udp::resolver resolver(io_context_);
+        udp::resolver::query query(udp::v4(), "google.com", "");
+        udp::resolver::iterator endpoints = resolver.resolve(query);
+        udp::endpoint ep = *endpoints;
+        send_socket_.connect(ep);
+        boost::asio::ip::address addr = send_socket_.local_endpoint().address();
+        return addr;
+    } catch (std::exception& e){
+        std::cerr << "Could not deal with socket. Exception: " << e.what() << std::endl;
+        return boost::asio::ip::address();
+    }
 }

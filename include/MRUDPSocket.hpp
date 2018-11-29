@@ -171,7 +171,7 @@ namespace mrudp {
             >
         > connections_set_type;
 
-        MRUDPSocket(unsigned send_port, unsigned recv_port);
+        MRUDPSocket(unsigned send_port = 0, unsigned recv_port = 0);
 
         ~MRUDPSocket();
 
@@ -215,6 +215,7 @@ namespace mrudp {
        
         const std::function<void(shared_ptr<Connection>)>& get_accept_handler() const;
       
+        boost::asio::ip::address get_local_ip();
       private:
 
         void start_receive();

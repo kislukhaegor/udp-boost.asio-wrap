@@ -19,20 +19,16 @@ void receive(std::string data, const udp::endpoint& recv) {
     std::cout << "Received msg from " << recv << " : " << data << std::endl; 
 }
 
-int main(int argc, char* argv[]) {
+int main() {
     try {
-        if (argc != 3)
-        {
-          std::cerr << "Usage: client <host send> <host recv>" << std::endl;
-          return 1;
-        }
-
-        shared_ptr<MRUDPSocket> socket = boost::make_shared<MRUDPSocket> (atoi(argv[1]), atoi(argv[2]));
+        shared_ptr<MRUDPSocket> socket = boost::make_shared<MRUDPSocket>();
         
         socket->open();
         
         shared_ptr<Connection> con;
-        bool complete = socket->connect(udp::endpoint(udp::v4(), 12346), con, std::chrono::milliseconds(5000));
+        auto ep = udp::endpoint(boost::asio::ip::address::from_string("91.78.14.133"), 12346);
+        std::cout << ep << std::endl;
+        bool complete = socket->connect(ep, con, std::chrono::milliseconds(5000));
         if (!complete) {
             return 1;
         }
