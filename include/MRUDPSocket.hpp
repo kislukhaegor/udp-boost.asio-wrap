@@ -141,9 +141,6 @@ namespace mrudp {
 
         MRUDPSocket* socket_;
 
-        std::mutex buf_recv_msgs_m_;
-        std::list<message_ptr> buf_recv_msgs_;
-
         std::set<uint32_t> accepted_nums;
 
         friend class MRUDPSocket;

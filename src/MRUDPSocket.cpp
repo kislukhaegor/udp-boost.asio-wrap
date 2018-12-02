@@ -126,19 +126,6 @@ milliseconds Connection::handle_not_accepted_msg(const time_point<steady_clock>&
     return sleep_time;
 }
 
-void MRUDPSocket::handle_not_accepted_msg() {
-    while (open_) {
-        auto now = steady_clock::now();
-        milliseconds sleep_time = recv_timeout;
-        for (auto& con : connections_) {
-            if (con->is_open()) {
-                sleep_time = std::min(sleep_time, con->handle_not_accepted_msg(now));
-            }
-        }
-        std::this_thread::sleep_for(sleep_time);
-    }
-}
-
 bool Connection::is_open() const {
     return open_;
 }
@@ -246,35 +233,6 @@ void Connection::handle_serv(const shared_ptr<Message>& msg) {
         auto& by_seq_send = not_accepted_messages_.get<Message::BySeq>();
         by_seq_send.erase(msg->get_params());
         return;
-    }
-}
-
-void MRUDPSocket::handle_cons() {
-    while(open_) {
-        time_point<steady_clock> now = steady_clock::now();
-        milliseconds cur_timeout(recv_timeout);
-        for (auto& con : connections_) {
-            if (con->is_open()) {
-                if (now - con->last_recv_time_ > conn_timeout) {
-                    con->send_serv_msg(Message::Flag::FIN, 0);
-                    con->close();
-                    if (disconnect_handler) {
-                        io_context_.post(std::bind(disconnect_handler, con));
-                    }
-                } else {
-                    if (now - con->last_send_time_ > recv_timeout) {
-                        con->send_serv_msg(Message::Flag::ACK, 0);
-                    }
-                    cur_timeout = std::min(cur_timeout, 
-                                           (recv_timeout -
-                                            (duration_cast<milliseconds>(now - con->last_send_time_) -
-                                            recv_timeout)
-                                           )
-                    );
-                }
-            }
-        }
-        std::this_thread::sleep_for(cur_timeout);
     }
 }
 
@@ -410,6 +368,49 @@ void MRUDPSocket::handle_receive(size_t bytes_recvd) {
     }
 }
 
+void MRUDPSocket::handle_cons() {
+    while(open_) {
+        time_point<steady_clock> now = steady_clock::now();
+        milliseconds cur_timeout(recv_timeout);
+        for (auto& con : connections_) {
+            if (con->is_open()) {
+                if (now - con->last_recv_time_ > conn_timeout) {
+                    con->send_serv_msg(Message::Flag::FIN, 0);
+                    con->close();
+                    if (disconnect_handler) {
+                        io_context_.post(std::bind(disconnect_handler, con));
+                    }
+                } else {
+                    if (now - con->last_send_time_ > recv_timeout) {
+                        con->send_serv_msg(Message::Flag::ACK, 0);
+                    }
+                    cur_timeout = std::min(cur_timeout, 
+                                           (recv_timeout -
+                                            (duration_cast<milliseconds>(now - con->last_send_time_) -
+                                            recv_timeout)
+                                           )
+                    );
+                }
+            }
+        }
+        std::this_thread::sleep_for(cur_timeout);
+    }
+}
+
+
+void MRUDPSocket::handle_not_accepted_msg() {
+    while (open_) {
+        auto now = steady_clock::now();
+        milliseconds sleep_time = recv_timeout;
+        for (auto& con : connections_) {
+            if (con->is_open()) {
+                sleep_time = std::min(sleep_time, con->handle_not_accepted_msg(now));
+            }
+        }
+        std::this_thread::sleep_for(sleep_time);
+    }
+}
+
 const MRUDPSocket::connections_set_type& MRUDPSocket::get_connections() const {
     return connections_;
 }
@@ -461,8 +462,7 @@ boost::asio::ip::address MRUDPSocket::get_local_ip() {
     }
 }
 
-const 
-::time_point<steady_clock>& Connection::get_last_send_time() const {
+const::time_point<steady_clock>& Connection::get_last_send_time() const {
     return last_send_time_;
 }
 

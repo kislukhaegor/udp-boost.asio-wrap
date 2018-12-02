@@ -42,7 +42,7 @@ void receive(std::string data, const udp::endpoint& recv) {
     std::cout << "Received from " << recv << " : " << data << std::endl; 
 }
 void accept_handler(std::set<shared_ptr<Connection>>& cons, shared_ptr<Connection> con) {
-    bool complete = con->start_async_recv(std::bind(receive, std::placeholders::_1, con->get_send_ep()));
+    con->start_async_recv(std::bind(receive, std::placeholders::_1, con->get_send_ep()));
     cons.insert(con);
 }
 
