@@ -26,9 +26,7 @@ int main() {
         socket->open();
         
         shared_ptr<Connection> con;
-        auto ep = udp::endpoint(boost::asio::ip::address::from_string("91.78.14.133"), 12346);
-        std::cout << ep << std::endl;
-        bool complete = socket->connect(ep, con, std::chrono::milliseconds(5000));
+        bool complete = socket->connect(udp::endpoint(udp::v4(), 12345), con, std::chrono::milliseconds(5000));
         if (!complete) {
             return 1;
         }
@@ -36,12 +34,6 @@ int main() {
         std::string msg("Hello ");
         int i = 0;
         while(con->is_open()) {
-        //     std::string data;
-        //     // bool complete = con->recv_data(data, std::chrono::milliseconds(1000));
-        //     if (complete) {
-        // //         // std::cout << i << std::endl;
-
-        //     }
             std::stringstream ss;
             ss << ++i;
             auto t = steady_clock::now();

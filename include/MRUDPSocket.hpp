@@ -61,9 +61,13 @@ namespace mrudp {
 
         const udp::endpoint& get_send_ep() const;
         const udp::endpoint& get_recv_ep() const;
+        const std::chrono::time_point<std::chrono::steady_clock>& get_last_send_time() const;
+        const std::chrono::time_point<std::chrono::steady_clock>& get_last_recv_time() const;
 
         struct BySend {};  // multi_index tag
         struct ByRecv {};  // multi_index tag
+        struct BySendTime {};  // multi_index tag
+        struct ByRecvTime {};  // multi_index tag
         struct ByPtr {};  // multi_index tag
 
         typedef shared_ptr<Message> message_ptr;
@@ -87,7 +91,6 @@ namespace mrudp {
 
       private:
         void start();
-        void handle_con();
         void wait_recv();
 
         void send_msg(const message_ptr& msg);
@@ -166,6 +169,20 @@ namespace mrudp {
                     tag<Connection::ByRecv>, const_mem_fun<Connection, const udp::endpoint&, &Connection::get_recv_ep>
                 >,
                 ordered_unique<
+                    tag<Connection::BySendTime>,
+                    const_mem_fun<Connection,
+                                  const std::chrono::time_point<std::chrono::steady_clock>&,
+                                  &Connection::get_last_send_time
+                                 >
+                >,
+                 ordered_unique<
+                    tag<Connection::ByRecvTime>,
+                    const_mem_fun<Connection,
+                                  const std::chrono::time_point<std::chrono::steady_clock>&,
+                                  &Connection::get_last_recv_time
+                                 >
+                >,
+                ordered_unique<
                     tag<Connection::ByPtr>, const_mem_fun<con_ptr, Connection*, &con_ptr::get>
                 >
             >
@@ -217,15 +234,18 @@ namespace mrudp {
       
         boost::asio::ip::address get_local_ip();
       private:
+        void run();
 
         void start_receive();
 
         void handle_receive(size_t bytes_rcvd);
 
+        void handle_cons();
+
         bool open_;
 
         /* listen condition_variable logic  */
-        std::future<size_t> io_future_;
+        std::future<void> io_future_;
 
         std::mutex listen_message_mutex_;
         shared_ptr<Message> listen_message_;

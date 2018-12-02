@@ -30,7 +30,7 @@ Connection::Connection(const udp::endpoint& send_endpoint,
 
 Connection::~Connection() {
     close();
-    async_handle_conn_.wait();
+    // async_handle_conn_.wait();
 }
 
 void Connection::close() {
@@ -62,7 +62,7 @@ void Connection::start() {
     last_recv_time_ = std::chrono::steady_clock::now();
     last_send_time_ = last_recv_time_;
     async_wait_recv_ = std::async(std::launch::async, &Connection::wait_recv, this);
-    async_handle_conn_ = std::async(std::launch::async, &Connection::handle_con, this);
+    // async_handle_conn_ = std::async(std::launch::async, &Connection::handle_con, this);
     async_handle_not_accepted_ = std::async(std::launch::async, &Connection::handle_not_accepted_msg, this);
 }
 
@@ -288,32 +288,32 @@ void Connection::handle_serv(const shared_ptr<Message>& msg) {
     }
 }
 
-void Connection::handle_con() {
-    std::chrono::milliseconds cur_timeout(recv_timeout);
+void MRUDPSocket::handle_cons() {
     while(open_) {
-        std::this_thread::sleep_for(cur_timeout);
         std::chrono::time_point<std::chrono::steady_clock> now = std::chrono::steady_clock::now();
-        if (now - last_recv_time_ > conn_timeout) {
-            if (!open_) {
-                return;
+        std::chrono::milliseconds cur_timeout(recv_timeout);
+        for (auto& con : connections_) {
+            if (con->is_open()) {
+                if (now - con->last_recv_time_ > conn_timeout) {
+                    con->send_serv_msg(Message::Flag::FIN, 0);
+                    con->close();
+                    if (disconnect_handler) {
+                        io_context_.post(std::bind(disconnect_handler, con));
+                    }
+                } else {
+                    if (now - con->last_send_time_ > recv_timeout) {
+                        con->send_serv_msg(Message::Flag::ACK, 0);
+                    }
+                    cur_timeout = std::min(cur_timeout, 
+                                           (recv_timeout -
+                                            (std::chrono::duration_cast<std::chrono::milliseconds>(now - con->last_send_time_) -
+                                            recv_timeout)
+                                           )
+                    );
+                }
             }
-            send_serv_msg(Message::Flag::FIN, 0);
-            close();
-            if (socket_->get_disconnect_handler()) {
-                socket_->get_disconnect_handler()(shared_from_this());
-            }
-            return;
         }
-        if (now - last_send_time_ > recv_timeout) {
-            shared_ptr<Message> msg = boost::make_shared<Message>();
-            msg->set_flags(Message::Flag::ACK);
-            send_msg(msg);
-            cur_timeout = recv_timeout;
-        } else {
-            cur_timeout = recv_timeout -
-                          (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_recv_time_) -
-                           recv_timeout);
-        }
+        std::this_thread::sleep_for(cur_timeout);
     }
 }
 
@@ -358,10 +358,21 @@ void MRUDPSocket::open() {
         return;
     }
     open_ = true;
+    io_context_.post(std::bind(&MRUDPSocket::handle_cons, this));
     start_receive();
+    
+    io_future_ = std::async(std::launch::async, &MRUDPSocket::run, this);
+}
+
+void MRUDPSocket::run() {
     std::size_t (boost::asio::io_context::*run)() = &boost::asio::io_context::run;
- 
-    io_future_ = std::async(std::launch::async, std::bind(run, &io_context_));
+    std::vector<std::thread> threads(4);
+    for (auto& th :threads) {
+        th = std::move(std::thread(std::bind(std::bind(run, &io_context_))));
+    }
+    for (auto& th : threads) {
+        th.join();
+    }
 }
 
 void MRUDPSocket::close() {
@@ -487,4 +498,12 @@ boost::asio::ip::address MRUDPSocket::get_local_ip() {
         std::cerr << "Could not deal with socket. Exception: " << e.what() << std::endl;
         return boost::asio::ip::address();
     }
+}
+
+const std::chrono::time_point<std::chrono::steady_clock>& Connection::get_last_send_time() const {
+    return last_send_time_;
+}
+
+const std::chrono::time_point<std::chrono::steady_clock>& Connection::get_last_recv_time() const {
+    return last_recv_time_;
 }

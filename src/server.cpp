@@ -59,7 +59,7 @@ void disconnect_handler(std::set<shared_ptr<Connection>>& cons, shared_ptr<Conne
 
 int main() {
     try {
-        shared_ptr<MRUDPSocket> socket = boost::make_shared<MRUDPSocket>();
+        shared_ptr<MRUDPSocket> socket = boost::make_shared<MRUDPSocket>(12344, 12345);
         socket->open();
 
         std::set<shared_ptr<Connection>> cons;
