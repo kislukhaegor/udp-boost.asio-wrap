@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <random>
 #include <list>
 #include <set>
 #include <cstdint>
@@ -18,6 +19,7 @@
 #include <boost/make_shared.hpp>
 #include <boost/enable_shared_from_this.hpp>
 #include <boost/fiber/all.hpp>
+
 
 #include "Message.hpp"
 
@@ -101,7 +103,7 @@ namespace mrudp {
         void send_msg(const message_ptr& msg);
         void send_serv_msg(Message::Flag flags, uint32_t params);
 
-        milliseconds handle_not_accepted_msg(const time_point<steady_clock>&);
+        void handle_not_accepted_msg(const time_point<steady_clock>&);
         void handle_message(const message_ptr&);
         void handle_serv(const message_ptr&);
         void handle_seq(const message_ptr&);
@@ -203,10 +205,10 @@ namespace mrudp {
                      const std::chrono::duration<Rep, Period>& timeout);
         
         template<class Rep, class Period>
-        bool listen(shared_ptr<Connection>& con, const std::chrono::duration<Rep, Period>& timeout);  //blocking
+        bool listen(std::pair<uint32_t, udp::endpoint>&, const std::chrono::duration<Rep, Period>& timeout);  //blocking
 
         template<class Rep, class Period>
-        bool accept(shared_ptr<Connection>& con, const std::chrono::duration<Rep, Period>& timeout);
+        bool accept(const std::pair<uint32_t, udp::endpoint>& , const std::chrono::duration<Rep, Period>& timeout);
 
         template<class Rep, class Period>
         bool listen_and_accept(const std::chrono::duration<Rep, Period>& timeout);
@@ -241,13 +243,14 @@ namespace mrudp {
 
         bool open_;
 
-        /* listen condition_variable logic  */
         std::future<void> io_future_;
 
+        /* listen condition_variable logic  */
         std::mutex listen_message_mutex_;
         shared_ptr<Message> listen_message_;
         udp::endpoint listen_endpoint_;
-        
+        /*----------------------------------*/
+
         std::mutex listen_mutex_;
         bool listen_notify_;
         std::condition_variable listen_cond_;
@@ -255,18 +258,18 @@ namespace mrudp {
 
         /* accept condition_variable logic  */        
         std::mutex accept_con_mutex_;
-        shared_ptr<Connection> accept_con_;
+        udp::endpoint accept_con_sender_ep_;
+        uint32_t accept_con_id_;
         
         std::mutex accept_mutex_;
         std::condition_variable accept_cond_;
         /*----------------------------------*/
 
-        /* connect condition_variable logic */
-        std::mutex connect_message_mutex_;
-        udp::endpoint connect_sender_ep_;
-        
-        std::mutex connect_mutex_;
-        bool connecting_notify_;
+        /* connect condition variable logic */
+        std::mutex connect_m_;
+        udp::endpoint con_sender_ep_;
+        uint32_t con_id_;
+        std::mutex connect_cond_m_;
         std::condition_variable connect_cond_;
         /*----------------------------------*/
 
@@ -282,21 +285,23 @@ namespace mrudp {
         connections_set_type connections_;
 
         std::mutex not_accepted_connections_m_;
-        connections_set_type not_accepted_connections_;
+        std::map<uint32_t, udp::endpoint> not_accepted_connections_;
 
         std::function<void(shared_ptr<Connection>)> disconnect_handler;
         std::function<void(shared_ptr<Connection>)> accept_handler;
+
+        std::mt19937 gen;
     };
 
 
     template<class Rep, class Period>
     bool MRUDPSocket::listen_and_accept(const std::chrono::duration<Rep, Period>& timeout) {
-        shared_ptr<Connection> con;
-        bool complete = listen(con, timeout);
+        std::pair<uint32_t, udp::endpoint> pair;
+        bool complete = listen(pair, timeout);
         if (!complete) {
             return false;
         }
-        complete = accept(con, timeout);
+        complete = accept(pair, timeout);
         return complete;
     }
 
@@ -320,7 +325,7 @@ namespace mrudp {
     }
 
     template<class Rep, class Period>
-    bool MRUDPSocket::listen(shared_ptr<Connection>& con,
+    bool MRUDPSocket::listen(std::pair<uint32_t, udp::endpoint>& con_pair,
                              const std::chrono::duration<Rep, Period>& timeout) {
         std::unique_lock<std::mutex> lock(listen_mutex_);
         if (!listen_cond_.wait_for(lock, timeout,
@@ -334,45 +339,44 @@ namespace mrudp {
         lock.unlock();
 
         std::unique_lock<std::mutex> lock_msg(listen_message_mutex_);
-        udp::endpoint send_ep = listen_endpoint_;
-        shared_ptr<Message> msg = listen_message_;
-        listen_message_.reset();
+        con_pair.second = listen_endpoint_;
         lock_msg.unlock();
 
-        udp::endpoint recv_ep = send_ep;
-        recv_ep.port(msg->get_params());
-        con = boost::make_shared<Connection>(send_ep, recv_ep, this);
-
         std::unique_lock<std::mutex> lock_con(not_accepted_connections_m_);
-        not_accepted_connections_.insert(con);
-        lock_con.unlock();
-
+        uint32_t num = 0;
+        do {
+            num = gen();
+        } while (not_accepted_connections_.find(num) != not_accepted_connections_.end());
+        con_pair.first = num;
+        not_accepted_connections_.insert(con_pair);
         return true;
     }
 
     template<class Rep, class Period>
-    bool MRUDPSocket::accept(shared_ptr<Connection>& con,
+    bool MRUDPSocket::accept(const std::pair<uint32_t, udp::endpoint>& con_pair,
                              const std::chrono::duration<Rep, Period>& timeout) {
         shared_ptr<Message> send_msg = boost::make_shared<Message>();
         send_msg->set_flags(Message::Flag::INIT | Message::Flag::ACK);
-        send_msg->set_params(recv_socket_.local_endpoint().port());
+        send_msg->set_params(con_pair.first);
         size_t length = 0;
-        bool complete = send_to_impl(send_msg, con->get_recv_ep(), length);
+        bool complete = send_to_impl(send_msg, con_pair.second, length);
         if (!complete) {
             return false;
         }
         std::unique_lock<std::mutex> lock(accept_mutex_);
         if (!accept_cond_.wait_for(lock, timeout,
-            [this, con] {
-                if (!accept_con_) {
-                    return false;
-                }
-                return accept_con_->get_send_ep() == con->get_send_ep();
+            [this, con_pair] {
+                return accept_con_id_ == con_pair.first;
             })
         ) {
             return false;
         }
+        lock.unlock();
+        std::unique_lock<std::mutex> tmp_lock(accept_con_mutex_);
+        udp::endpoint tmp_ep = accept_con_sender_ep_;
+        tmp_lock.unlock();
         std::unique_lock<std::mutex> lock_con(connections_m_);
+        shared_ptr<Connection> con = boost::make_shared<Connection>(tmp_ep, con_pair.second, this);
         connections_.insert(con);
         con->start();
         if (accept_handler) {
@@ -387,36 +391,35 @@ namespace mrudp {
                               const std::chrono::duration<Rep, Period>& timeout) {
         shared_ptr<Message> send_msg = boost::make_shared<Message>();
         send_msg->set_flags(Message::Flag::INIT);
-        send_msg->set_params(recv_socket_.local_endpoint().port());
-        size_t length = 0;
-        bool complete = send_to_impl(send_msg, ep, length);
-        if (!complete) {
-            return false;
-        }
-        std::unique_lock<std::mutex> lock(connect_mutex_);
+        send_msg->update_crc();
+        std::future<std::size_t> send_length =
+            recv_socket_.async_send_to(boost::asio::buffer(send_msg->str()),
+                                 ep, // ... until here. This call may block.
+                                 boost::asio::use_future);
+        std::cout << "Wait send" << std::endl;
+        send_length.wait();
+        std::cout << "Sended" << std::endl;
+        udp::endpoint sender_endpoint;
+        std::unique_lock<std::mutex> lock(connect_cond_m_);
         if (!connect_cond_.wait_for(lock, timeout,
             [this] {
-                return connecting_notify_ == true;
+                return con_id_ != 0;
             })
         ) {
             return false;
         }
         lock.unlock();
-        std::unique_lock<std::mutex> lock_con(connect_message_mutex_);
-        udp::endpoint send_ep = connect_sender_ep_;
-        lock_con.unlock();
-
-        send_msg->set_flags(Message::Flag::ACK);
-        send_msg->set_params(0);
-        length = 0;
-        complete = send_to_impl(send_msg, ep, length);
+        std::unique_lock<std::mutex> data_lock(connect_m_);
+        send_msg->set_flags(Message::ACK);
+        send_msg->set_params(con_id_);
+        con_id_ = 0;
+        size_t length = 0;
+        bool complete = send_to_impl(send_msg, ep, length);
         if (!complete) {
             return false;
         }
-
-        con = boost::make_shared<Connection>(send_ep, ep, this);
+        con = boost::make_shared<Connection>(con_sender_ep_, ep, this);
         connections_.insert(con);
-
         con->start();
         return true;
     }

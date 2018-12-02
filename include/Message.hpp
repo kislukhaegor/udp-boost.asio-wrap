@@ -18,7 +18,7 @@ namespace mrudp {
             SEQ
         };
 
-        enum Flag {
+        enum Flag : uint16_t{
             INIT = 1,
             ACK = 2,
             FIN = 4

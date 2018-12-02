@@ -110,20 +110,16 @@ void Connection::send_seq(const std::string& data) {
     not_accepted_messages_.insert(msg);
 }
 
-milliseconds Connection::handle_not_accepted_msg(const time_point<steady_clock>& now) {
-    milliseconds sleep_time = recv_timeout;
-    while (!not_accepted_messages_.empty()) {
-        std::unique_lock<std::recursive_mutex> nam_lock(not_accepted_messages_m_);
-        auto& by_time_set = not_accepted_messages_.get<Message::ByTime>();
-        for (auto msg : by_time_set) {
-            if (now - msg->get_time() < recv_timeout) {
-                sleep_time = recv_timeout - duration_cast<milliseconds>(now - msg->get_time());
-                break;
-            }
-            send_msg(msg);
+void Connection::handle_not_accepted_msg(const time_point<steady_clock>& now) {
+    std::unique_lock<std::recursive_mutex> nam_lock(not_accepted_messages_m_);
+    auto& by_time_set = not_accepted_messages_.get<Message::ByTime>();
+    for (auto msg : by_time_set) {
+        if (now - msg->get_time() < recv_timeout) {
+            break;
         }
+        send_msg(msg);
     }
-    return sleep_time;
+    return;
 }
 
 bool Connection::is_open() const {
@@ -259,7 +255,8 @@ void Connection::send_serv_msg(Message::Flag flags, uint32_t params) {
 MRUDPSocket::MRUDPSocket(unsigned send_port, unsigned recv_port)
     : open_(false),
       listen_notify_(false),
-      connecting_notify_(false),
+      accept_con_id_(0),
+      con_id_(0),
       send_socket_(io_context_, udp::endpoint(udp::v4(), send_port)),
       recv_socket_(io_context_, udp::endpoint(udp::v4(), recv_port)) {
 }
@@ -283,7 +280,6 @@ void MRUDPSocket::open(uint32_t handle_threads_count) {
     io_context_.post(std::bind(&MRUDPSocket::handle_cons, this));
     io_context_.post(std::bind(&MRUDPSocket::handle_not_accepted_msg, this));
     start_receive();
-    
     io_future_ = std::async(std::launch::async, &MRUDPSocket::run, this, handle_threads_count);
 }
 
@@ -333,36 +329,33 @@ void MRUDPSocket::handle_receive(size_t bytes_recvd) {
             return;
         }
 
-        auto& by_send_not_accepted = not_accepted_connections_.get<Connection::BySend>();
-        iter = not_accepted_connections_.find(tmp_ep_);
-        if (iter != by_send_not_accepted.end()) {
-            if (msg->get_flags() == Message::Flag::ACK) {
+        if (msg->get_flags() == Message::Flag::ACK) {
+            auto iter = not_accepted_connections_.find(msg->get_params());
+            std::unique_lock<std::mutex> lock(not_accepted_connections_m_);
+            if (iter != not_accepted_connections_.end()) {
                 std::unique_lock<std::mutex> lock(accept_con_mutex_);
-                accept_con_ = *iter;
-                std::unique_lock<std::mutex> set_lock(not_accepted_connections_m_);
-                by_send_not_accepted.erase(iter);
+                accept_con_sender_ep_ = tmp_ep_;
+                accept_con_id_ = msg->get_params();
                 accept_cond_.notify_all();
-                return;
             }
+            return;
         }
-
+        
         if (msg->get_flags() == Message::Flag::INIT) {
             std::unique_lock<std::mutex> lock(listen_message_mutex_);
-            listen_message_ = msg;
             listen_endpoint_ = tmp_ep_;
-            lock.unlock();
             listen_notify_ = true;
             listen_cond_.notify_one();
             return;
-        
-        } if (msg->get_flags() == (Message::Flag::INIT | Message::Flag::ACK)) {
-            std::unique_lock<std::mutex> lock(connect_message_mutex_);
-            connect_sender_ep_ = tmp_ep_;
-            lock.unlock();
-            connecting_notify_ = true;
-            connect_cond_.notify_all();
-            return;
         }
+
+        if (msg->get_flags() == (Message::Flag::INIT | Message::Flag::ACK)) {
+            std::unique_lock<std::mutex> lock(connect_m_);
+            con_id_ = msg->get_params();
+            con_sender_ep_ = tmp_ep_;
+            connect_cond_.notify_all();
+        }
+
     } catch (std::invalid_argument& e) {
         return;
     }
@@ -397,17 +390,15 @@ void MRUDPSocket::handle_cons() {
     }
 }
 
-
 void MRUDPSocket::handle_not_accepted_msg() {
     while (open_) {
         auto now = steady_clock::now();
-        milliseconds sleep_time = recv_timeout;
         for (auto& con : connections_) {
             if (con->is_open()) {
-                sleep_time = std::min(sleep_time, con->handle_not_accepted_msg(now));
+                io_context_.post(std::bind(&Connection::handle_not_accepted_msg, con, now));
             }
         }
-        std::this_thread::sleep_for(sleep_time);
+        std::this_thread::sleep_for(recv_timeout);
     }
 }
 

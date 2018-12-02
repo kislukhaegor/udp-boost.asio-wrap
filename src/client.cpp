@@ -23,7 +23,7 @@ int main() {
     try {
         shared_ptr<MRUDPSocket> socket = boost::make_shared<MRUDPSocket>();
         
-        socket->open();
+        socket->open(1);
         
         shared_ptr<Connection> con;
         bool complete = socket->connect(udp::endpoint(udp::v4(), 12345), con, std::chrono::milliseconds(5000));
