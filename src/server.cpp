@@ -42,7 +42,7 @@ void receive(std::string data, const udp::endpoint& recv) {
     std::cout << "Received from " << recv << " : " << data << std::endl; 
 }
 void accept_handler(std::set<shared_ptr<Connection>>& cons, shared_ptr<Connection> con) {
-    con->start_async_recv(std::bind(receive, std::placeholders::_1, con->get_send_ep()));
+    bool complete = con->start_async_recv(std::bind(receive, std::placeholders::_1, con->get_send_ep()));
     cons.insert(con);
 }
 
@@ -60,12 +60,12 @@ void disconnect_handler(std::set<shared_ptr<Connection>>& cons, shared_ptr<Conne
 int main() {
     try {
         shared_ptr<MRUDPSocket> socket = boost::make_shared<MRUDPSocket>(12344, 12345);
-        socket->open();
+        socket->open(5);
 
         std::set<shared_ptr<Connection>> cons;
         socket->set_accept_handler(std::bind(accept_handler, std::ref(cons), std::placeholders::_1));
         socket->set_disconnect_handler(std::bind(disconnect_handler, std::ref(cons), std::placeholders::_1));
-        socket->async_listen_and_accept(5, milliseconds(10000));
+        socket->async_listen_and_accept(5, milliseconds(60000));
         answer(cons);
         socket->close();
     } catch (std::exception& e) {

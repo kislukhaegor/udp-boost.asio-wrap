@@ -10,8 +10,8 @@ using mrudp::Connection;
 using boost::asio::ip::udp;
 using boost::asio::io_context;
 
-static const std::chrono::milliseconds recv_timeout(3000);
-static const std::chrono::milliseconds conn_timeout(12000);
+static const milliseconds recv_timeout(3000);
+static const milliseconds conn_timeout(12000);
 static const uint32_t max_in_accepted_nums(1024);
 
 Connection::Connection(const udp::endpoint& send_endpoint,
@@ -30,23 +30,19 @@ Connection::Connection(const udp::endpoint& send_endpoint,
 
 Connection::~Connection() {
     close();
-    // async_handle_conn_.wait();
 }
 
 void Connection::close() {
     if (!open_) {
         return;
     }
+    send_serv_msg(Message::Flag::FIN, 0);
     open_ = false;
     if (is_async_recv_) {
         stop_async_recv();
     } else {
         read_message_.notify_all();
     }
-    not_accepted_cond_.notify_all();
-    async_handle_not_accepted_.wait();
-    recv_wait_.notify_all();
-    async_wait_recv_.wait();
 }
 
 const udp::endpoint& Connection::get_send_ep() const {
@@ -59,78 +55,31 @@ const udp::endpoint& Connection::get_recv_ep() const {
 
 void Connection::start() {
     open_ = true;
-    last_recv_time_ = std::chrono::steady_clock::now();
+    last_recv_time_ = steady_clock::now();
     last_send_time_ = last_recv_time_;
-    async_wait_recv_ = std::async(std::launch::async, &Connection::wait_recv, this);
-    // async_handle_conn_ = std::async(std::launch::async, &Connection::handle_con, this);
-    async_handle_not_accepted_ = std::async(std::launch::async, &Connection::handle_not_accepted_msg, this);
-}
-
-
-void Connection::wait_recv() {
-    while (open_) {
-        std::unique_lock<std::mutex> lock(recv_wait_m_);
-        recv_wait_.wait(lock,
-            [this] () {
-                return !buf_recv_msgs_.empty() || !open_;   // !open need to stop wait in closing
-            }
-        );
-        if (!open_) {
-            return;
-        }
-        int i = 0;
-        while (!buf_recv_msgs_.empty()) {
-            ++i;
-            handle_message(buf_recv_msgs_.front());
-            std::unique_lock<std::mutex> lock(buf_recv_msgs_m_);
-            buf_recv_msgs_.pop_front();
-            lock.unlock();
-            /* Насколько я понимаю это, передав управление другому потоку, я позволю ему захватить mutex и дописать в очередь */
-            std::this_thread::yield();
-        }
-    }
-}
-
-void Connection::async_recv_data() {
-    while (is_async_recv_ && open_) {
-        std::unique_lock<std::mutex> lock(read_message_m_);
-        read_message_.wait(lock,
-            [this] () {
-                return !unreaded_messages_.empty() || !is_async_recv_;
-            }
-        );
-        if (!is_async_recv_) {
-            return;
-        }
-        int i = 0;
-        while (!unreaded_messages_.empty()) {
-            ++i;
-            msg_handler_(std::move(unreaded_messages_.front()->get_data()));
-            std::unique_lock<std::recursive_mutex> queue_lock(unreaded_messages_m_);
-            unreaded_messages_.pop_front();
-            queue_lock.unlock();
-            std::this_thread::yield();
-        }
-    }
 }
 
 bool Connection::start_async_recv(const std::function<void(std::string data)>& msg_handler) {
-    if (!open_ || is_async_recv_) {
+    if (!open_ || !msg_handler) {
         return false;
     }
-    std::unique_lock<std::recursive_mutex> lock(async_recv_m_);
-    msg_handler_ = msg_handler;
-    is_async_recv_ = true;
-    async_recv_ = std::async(std::launch::async, &Connection::async_recv_data, this);
+    {
+        std::unique_lock<std::recursive_mutex> lock(async_recv_m_);
+        msg_handler_ = msg_handler;
+        is_async_recv_ = true;
+    }
+    std::unique_lock<std::recursive_mutex> lock(unreaded_messages_m_);
+    while (!unreaded_messages_.empty()) {
+        socket_->get_io_context().post(std::bind(msg_handler_,
+                                                 std::move(unreaded_messages_.front()->get_data())));
+        unreaded_messages_.pop_front();
+    }
     return true;
 }
-
 
 void Connection::stop_async_recv() {
     std::unique_lock<std::recursive_mutex> lock(async_recv_m_);
     is_async_recv_ = false;
-    read_message_.notify_all();
-    async_recv_.wait();
 }
 
 bool Connection::is_async_recv() const {
@@ -161,32 +110,32 @@ void Connection::send_seq(const std::string& data) {
     not_accepted_messages_.insert(msg);
 }
 
-void Connection::handle_not_accepted_msg() {
+milliseconds Connection::handle_not_accepted_msg(const time_point<steady_clock>& now) {
+    milliseconds sleep_time = recv_timeout;
+    while (!not_accepted_messages_.empty()) {
+        std::unique_lock<std::recursive_mutex> nam_lock(not_accepted_messages_m_);
+        auto& by_time_set = not_accepted_messages_.get<Message::ByTime>();
+        for (auto msg : by_time_set) {
+            if (now - msg->get_time() < recv_timeout) {
+                sleep_time = recv_timeout - duration_cast<milliseconds>(now - msg->get_time());
+                break;
+            }
+            send_msg(msg);
+        }
+    }
+    return sleep_time;
+}
+
+void MRUDPSocket::handle_not_accepted_msg() {
     while (open_) {
-        std::unique_lock<std::mutex> lock(not_accepted_cond_m_);
-        not_accepted_cond_.wait(lock,
-            [this] () {
-                return !not_accepted_messages_.empty() || !open_;
+        auto now = steady_clock::now();
+        milliseconds sleep_time = recv_timeout;
+        for (auto& con : connections_) {
+            if (con->is_open()) {
+                sleep_time = std::min(sleep_time, con->handle_not_accepted_msg(now));
             }
-        );
-        lock.unlock();
-        if (!open_) {
-            return;
         }
-        while (!not_accepted_messages_.empty()) {
-            auto now = std::chrono::steady_clock::now();
-            std::unique_lock<std::recursive_mutex> nam_lock(not_accepted_messages_m_);
-            auto& by_time_set = not_accepted_messages_.get<Message::ByTime>();
-            std::chrono::milliseconds sleep_time = recv_timeout;
-            for (auto msg : by_time_set) {
-                if (now - msg->get_time() < recv_timeout) {
-                    sleep_time = recv_timeout - std::chrono::duration_cast<std::chrono::milliseconds>(now - msg->get_time());
-                    break;
-                }
-                send_msg(msg);
-            }
-            std::this_thread::sleep_for(sleep_time);
-        }
+        std::this_thread::sleep_for(sleep_time);
     }
 }
 
@@ -212,6 +161,10 @@ void Connection::handle_message(const shared_ptr<Message>& msg) {
         
         if (msg->get_packet_type() == Message::PacketType::DEF) {
             if (msg->get_seq() == connection_seq_) {
+                if (is_async_recv()) {
+                    socket_->get_io_context().post(std::bind(msg_handler_, std::move(msg->get_data())));
+                    return;
+                }
                 std::unique_lock<std::recursive_mutex> lock(unreaded_messages_m_);
                 unreaded_messages_.push_back(msg);
                 read_message_.notify_one();
@@ -226,6 +179,10 @@ void Connection::handle_message(const shared_ptr<Message>& msg) {
             if (!ret) {
                 return;
             }
+            if (is_async_recv()) {
+                socket_->get_io_context().post(std::bind(msg_handler_, std::move(msg->get_data())));
+                return;
+            }
             std::unique_lock<std::recursive_mutex> lock(unreaded_messages_m_);
             unreaded_messages_.push_back(msg);
             read_message_.notify_one();
@@ -238,6 +195,7 @@ void Connection::handle_message(const shared_ptr<Message>& msg) {
             if (ret) {
                 handle_seq(msg);
             }
+            return;
         }
     }
 }
@@ -261,15 +219,18 @@ void Connection::handle_seq(const message_ptr& msg) {
         defered_messages_.insert(msg);
         return;
     }
-    std::unique_lock<std::recursive_mutex> lock(unreaded_messages_m_);
-    unreaded_messages_.push_back(msg);
-    read_message_.notify_one();
-    lock.unlock();
+    if (is_async_recv()) {
+        socket_->get_io_context().post(std::bind(msg_handler_, std::move(msg->get_data())));
+    } else {
+        std::unique_lock<std::recursive_mutex> lock(unreaded_messages_m_);
+        unreaded_messages_.push_back(msg);
+        read_message_.notify_one();
+    }
     last_seq_recv_ = msg->get_seq();
     auto& msg_set = defered_messages_.get<Message::BySeq>();
     auto it = msg_set.find(msg->get_seq());
     if (it != msg_set.end()) {
-        std::unique_lock<std::recursive_mutex> defer_msg_lock(defered_messages_m_);
+        std::unique_lock<std::recursive_mutex> lock(defered_messages_m_);
         msg_set.erase(it);
         handle_seq(*it);
     }
@@ -290,8 +251,8 @@ void Connection::handle_serv(const shared_ptr<Message>& msg) {
 
 void MRUDPSocket::handle_cons() {
     while(open_) {
-        std::chrono::time_point<std::chrono::steady_clock> now = std::chrono::steady_clock::now();
-        std::chrono::milliseconds cur_timeout(recv_timeout);
+        time_point<steady_clock> now = steady_clock::now();
+        milliseconds cur_timeout(recv_timeout);
         for (auto& con : connections_) {
             if (con->is_open()) {
                 if (now - con->last_recv_time_ > conn_timeout) {
@@ -306,7 +267,7 @@ void MRUDPSocket::handle_cons() {
                     }
                     cur_timeout = std::min(cur_timeout, 
                                            (recv_timeout -
-                                            (std::chrono::duration_cast<std::chrono::milliseconds>(now - con->last_send_time_) -
+                                            (duration_cast<milliseconds>(now - con->last_send_time_) -
                                             recv_timeout)
                                            )
                     );
@@ -325,7 +286,7 @@ void Connection::send_msg(const shared_ptr<Message>& msg) {
     size_t length;
     socket_->send_to_impl(msg, recv_endpoint_, length);
     std::unique_lock<std::recursive_mutex> lock(connection_seq_m_);
-    last_send_time_ = std::chrono::steady_clock::now();
+    last_send_time_ = steady_clock::now();
     msg->set_time(last_send_time_);
     ++current_seq_;
 }
@@ -353,20 +314,24 @@ bool MRUDPSocket::is_open() const {
     return open_;
 }
 
-void MRUDPSocket::open() {
+void MRUDPSocket::open(uint32_t handle_threads_count) {
     if (open_) {
         return;
     }
+    if (handle_threads_count < 1) {
+        throw std::invalid_argument("Invalid threads count");
+    }
     open_ = true;
     io_context_.post(std::bind(&MRUDPSocket::handle_cons, this));
+    io_context_.post(std::bind(&MRUDPSocket::handle_not_accepted_msg, this));
     start_receive();
     
-    io_future_ = std::async(std::launch::async, &MRUDPSocket::run, this);
+    io_future_ = std::async(std::launch::async, &MRUDPSocket::run, this, handle_threads_count);
 }
 
-void MRUDPSocket::run() {
+void MRUDPSocket::run(uint32_t handle_threads_count) {
     std::size_t (boost::asio::io_context::*run)() = &boost::asio::io_context::run;
-    std::vector<std::thread> threads(4);
+    std::vector<std::thread> threads(service_thread_count + handle_threads_count);
     for (auto& th :threads) {
         th = std::move(std::thread(std::bind(std::bind(run, &io_context_))));
     }
@@ -402,15 +367,11 @@ void MRUDPSocket::start_receive() {
 void MRUDPSocket::handle_receive(size_t bytes_recvd) {
     try {
         shared_ptr<Message> msg = boost::make_shared<Message>(tmp_data_.data(), bytes_recvd);
-        msg->set_time(std::chrono::steady_clock::now());
+        msg->set_time(steady_clock::now());
         auto& by_send_set = connections_.get<Connection::BySend>();
         auto iter = connections_.find(tmp_ep_);
         if (iter != by_send_set.end()) {
-            {
-                std::unique_lock<std::mutex> lock((*iter)->buf_recv_msgs_m_);
-                (*iter)->buf_recv_msgs_.push_back(msg);
-            }
-            (*iter)->recv_wait_.notify_one();    
+            io_context_.post(std::bind(&Connection::handle_message, *iter, msg));
             return;
         }
 
@@ -494,16 +455,21 @@ boost::asio::ip::address MRUDPSocket::get_local_ip() {
         send_socket_.connect(ep);
         boost::asio::ip::address addr = send_socket_.local_endpoint().address();
         return addr;
-    } catch (std::exception& e){
+    } catch (std::exception& e) {
         std::cerr << "Could not deal with socket. Exception: " << e.what() << std::endl;
         return boost::asio::ip::address();
     }
 }
 
-const std::chrono::time_point<std::chrono::steady_clock>& Connection::get_last_send_time() const {
+const 
+::time_point<steady_clock>& Connection::get_last_send_time() const {
     return last_send_time_;
 }
 
-const std::chrono::time_point<std::chrono::steady_clock>& Connection::get_last_recv_time() const {
+const time_point<steady_clock>& Connection::get_last_recv_time() const {
     return last_recv_time_;
+}
+
+boost::asio::io_context& MRUDPSocket::get_io_context() {
+    return io_context_;
 }

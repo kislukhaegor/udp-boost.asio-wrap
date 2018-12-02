@@ -21,6 +21,11 @@
 
 #include "Message.hpp"
 
+using std::chrono::time_point;
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
+using std::chrono::duration_cast;
+using std::chrono::duration;
 using boost::asio::ip::udp;
 using boost::shared_ptr;
 using boost::multi_index::tag;
@@ -54,15 +59,15 @@ namespace mrudp {
         bool is_async_recv() const;
 
         template<class Rep, class Period>
-        bool recv_data(std::string& data, const std::chrono::duration<Rep, Period>& timeout);
+        bool recv_data(std::string& data, const duration<Rep, Period>& timeout);
 
         bool is_open() const;
         void close();
 
         const udp::endpoint& get_send_ep() const;
         const udp::endpoint& get_recv_ep() const;
-        const std::chrono::time_point<std::chrono::steady_clock>& get_last_send_time() const;
-        const std::chrono::time_point<std::chrono::steady_clock>& get_last_recv_time() const;
+        const time_point<steady_clock>& get_last_send_time() const;
+        const time_point<steady_clock>& get_last_recv_time() const;
 
         struct BySend {};  // multi_index tag
         struct ByRecv {};  // multi_index tag
@@ -80,7 +85,7 @@ namespace mrudp {
                 ordered_non_unique<
                     tag<Message::ByTime>,
                     const_mem_fun<Message,
-                    const std::chrono::time_point<std::chrono::steady_clock>&,
+                    const time_point<steady_clock>&,
                     &Message::get_time>
                 >,
                 ordered_unique<
@@ -91,14 +96,12 @@ namespace mrudp {
 
       private:
         void start();
-        void wait_recv();
+        // void wait_recv();
 
         void send_msg(const message_ptr& msg);
         void send_serv_msg(Message::Flag flags, uint32_t params);
 
-        void async_recv_data();
-
-        void handle_not_accepted_msg();
+        milliseconds handle_not_accepted_msg(const time_point<steady_clock>&);
         void handle_message(const message_ptr&);
         void handle_serv(const message_ptr&);
         void handle_seq(const message_ptr&);
@@ -112,11 +115,11 @@ namespace mrudp {
         std::function<void(std::string data)> msg_handler_;
 
         std::recursive_mutex current_seq_m_;
-        std::chrono::time_point<std::chrono::steady_clock> last_send_time_;
+        time_point<steady_clock> last_send_time_;
         uint32_t current_seq_;
 
         std::recursive_mutex connection_seq_m_;
-        std::chrono::time_point<std::chrono::steady_clock> last_recv_time_;
+        time_point<steady_clock> last_recv_time_;
         uint32_t connection_seq_;
 
         std::recursive_mutex unreaded_messages_m_;
@@ -130,9 +133,6 @@ namespace mrudp {
         uint32_t last_seq_recv_;
         uint32_t last_seq_send_;
 
-        std::mutex not_accepted_cond_m_;
-        std::condition_variable not_accepted_cond_;
-
         std::recursive_mutex not_accepted_messages_m_;
         message_set_type not_accepted_messages_;
 
@@ -140,13 +140,6 @@ namespace mrudp {
         udp::endpoint recv_endpoint_;
 
         MRUDPSocket* socket_;
-        std::future<void> async_handle_conn_;
-        std::future<void> async_wait_recv_;
-        std::future<void> async_handle_not_accepted_;
-        std::future<void> async_recv_;
-
-        std::mutex recv_wait_m_;
-        std::condition_variable recv_wait_;
 
         std::mutex buf_recv_msgs_m_;
         std::list<message_ptr> buf_recv_msgs_;
@@ -171,14 +164,14 @@ namespace mrudp {
                 ordered_unique<
                     tag<Connection::BySendTime>,
                     const_mem_fun<Connection,
-                                  const std::chrono::time_point<std::chrono::steady_clock>&,
+                                  const time_point<steady_clock>&,
                                   &Connection::get_last_send_time
                                  >
                 >,
                  ordered_unique<
                     tag<Connection::ByRecvTime>,
                     const_mem_fun<Connection,
-                                  const std::chrono::time_point<std::chrono::steady_clock>&,
+                                  const time_point<steady_clock>&,
                                   &Connection::get_last_recv_time
                                  >
                 >,
@@ -192,7 +185,7 @@ namespace mrudp {
 
         ~MRUDPSocket();
 
-        void open();
+        void open(uint32_t handle_threads_count = 1);
 
         bool is_open() const;
 
@@ -233,8 +226,15 @@ namespace mrudp {
         const std::function<void(shared_ptr<Connection>)>& get_accept_handler() const;
       
         boost::asio::ip::address get_local_ip();
+
+        boost::asio::io_context& get_io_context();
+
+        static const uint32_t service_thread_count = 2;
+
       private:
-        void run();
+        void handle_not_accepted_msg();
+
+        void run(uint32_t);
 
         void start_receive();
 
@@ -379,7 +379,7 @@ namespace mrudp {
         connections_.insert(con);
         con->start();
         if (accept_handler) {
-            accept_handler(con);
+            io_context_.post(std::bind(accept_handler, con));
         }
         return true;
     }
